@@ -7,33 +7,44 @@ import time
 import sys
 import serial
 
+from std_msgs.msg import Float32
+
 #configure the serial connections
+def ser_init():
+    global ser
+    ser = serial.Serial(
+        port=rospy.get_param('~port'),
+    	baudrate=9600,
+    	parity=serial.PARITY_NONE,
+    	stopbits=serial.STOPBITS_ONE,
+    	bytesize=serial.EIGHTBITS,
+    	timeout=3
+    )
+    return
 
-ser = serial.Serial(
-    port='/dev/ttyUSB0',
-    baudrate=9600,
-    parity=serial.PARITY_NONE,
-    stopbits=serial.STOPBITS_ONE,
-    bytesize=serial.EIGHTBITS,
-    timeout=3
-)
+#define global character shortcuts for checksums
+def char_init():
+    global stx
+    global etx
+    global zero
 
-##ser.close()
-##ser.open()
-ser.isOpen()
+    zero = '0'
+    #start and end characters for each checksum
+    stx = "02".decode("hex")
+    etx = "03".decode("hex")
 
-#start and end characters for each checksum
-stx = "02".decode("hex")
-etx = "03".decode("hex")
+#define input parameters specific to this robo cylinder
+#axis can be changed to 0-15. Lead screw is somewhere between 2-10mm
+def param_init():
+    global axis
+    global axis_str
+    global axis_val
+    global lead
 
-#input parameters specific to this robo cylinder
-#axis can be changed to 0-15 but ours operates on axis 0. Lead screw is supposedly $
-axis = 0
-axis_str = hex(axis).upper()[2:]
-axis_val = int(axis_str.encode("hex"), 16)
-lead = 10
-
-zero = '0'
+    axis = rospy.get_param('~axis')
+    axis_str = hex(axis).upper()[2:]
+    axis_val = int(axis_str.encode("hex"), 16)
+    lead = rospy.get_param('~lead')
 
 #BCC lsb calculator to check communication integrity
 def bcc_calc(bcc_int):
@@ -46,61 +57,61 @@ def bcc_calc(bcc_int):
     return bcc
 
 #Retrieve status signal
-def status():
+def status(req):
     msg = axis_str + 'n' + 10*zero
     #BCC is calculated based on the ascii values of the 12-character message (everything but the stx, bcc, and etx)
     bcc_int = axis_val + ord('n') + 10*ord(zero)
     bcc = bcc_calc(bcc_int)
     csum = stx + msg + bcc + etx
     ser.write(csum)
-    print 'Status checksum sent: %s\n'%csum
-    return csum
+    rospy.loginfo('Status request checksum sent: %s\n'%csum)
+    return True
 
 #Power signal
-def power(io):
-    io = str(io)
+def power(req):
+    io = str(req.io)
     msg = axis_str + 'q' + io + 9*zero
     bcc_int = axis_val + ord('q') + ord(io) + 9*ord(zero)
     bcc = bcc_calc(bcc_int)
     csum = stx + msg + bcc + etx
     ser.write(csum)
-    if io == '1':
-        print 'Power on checksum sent: %s\n'%csum
-    elif io == '0':
-        print 'Power off checksum sent: %s\n'%csum
-    return csum
+    rospy.loginfo("Power checksum sent: %s\n"%csum)
+    return True
 
 #Homing signal
-def home():
+def home(req):
     direction = '9'
     msg = axis_str + 'o' + zero + direction + 8*zero
     bcc_int = axis_val + ord('o') + ord(direction) + 9*ord(zero)
     bcc = bcc_calc(bcc_int)
     csum = stx + msg + bcc + etx
     ser.write(csum)
-    print 'Homing checksum sent: %s\n'%csum
-    time.sleep(5)                       #homing usually takes a few extra seconds to complete
-    return csum
+    rospy.loginfo('Homing command checksum sent: %s\n'%csum)
+    return True
 
 #Absolute positioning signal
-def abs_move(position):
-    a = 'a'
+def abs_move(pos, converted):
+    position = pos
     #protocol subtracts position from FFFFFFFF if the robot homes to the motor end
     position = hex(16**8 - 1 - int(round(position))).upper()[2:10]
-    msg = axis_str + a + position + 2*zero
+    msg = axis_str + 'a' + position + 2*zero
     pos_int = 0
-    for i in range(0, 8):               #adds up each ascii values of each character of the hex position
+    for i in range(0, 8):               #adds up the ascii values of each character of the hex position
         pos_int += int(position[i].encode("hex"), 16)
-    bcc_int = axis_val + ord(a) + pos_int + 2*ord(zero)
+    bcc_int = axis_val + ord('a') + pos_int + 2*ord(zero)
     bcc = bcc_calc(bcc_int)
     csum = stx + msg + bcc + etx
     ser.write(csum)
-    print 'Position checksum sent: %s\n'%csum
-    time.sleep(1)
-    return csum
+    rospy.loginfo('Position command checksum sent: %s\n'%csum)
+    if converted:
+    	meters = pos*lead/8000.0/1000.0 #the 8000 is a constant from protocol conversion. 1000 is conv from mm to meters
+    return True
 
 #Velocity and acceleration change signal
-def vel_acc(vel, acc):
+def vel_acc(req):
+    vel = req.vel
+    acc = req.acc
+
     #conversions defined in protocol instructions
     vel = vel*100*300/lead
     vel = hex(int(vel)).upper()[2:]
@@ -123,46 +134,66 @@ def vel_acc(vel, acc):
     bcc = bcc_calc(bcc_int)
     csum = stx + msg + bcc + etx
     ser.write(csum)
-    print 'Velocity and acceleration checksum sent: %s\n'%csum
-    return csum
+    rospy.loginfo('Velocity and acceleration change checksum sent: %s\n'%csum)
+    return True
 
-def handle_status(req):
-    print "Returning checksum for status update request."
-    return StatusUpdateResponse(status())
+#Position inquiry
+def pos_inq(pos_meters):
+    msg = axis_str + 'R4' + 4*zero + '74' + 3*zero
+    bcc_int = axis_val + ord('R') + 2*ord('4') + ord('7') + 7*ord(zero)
+    bcc = bcc_calc(bcc_int)
+    csum = stx + msg + bcc + etx
+    ser.write(csum)
+    response = ser.read(16)
+    if len(response) == 0: response = '_'
+    if response[0] == stx:
+       try:
+          pos_pulses = int(response[5:13], 16)
+          pos_temp = float(((16**8-1)-pos_pulses)*10/8000.0/1000.0)
+	  if pos_temp < 10:
+	     pos_meters = pos_temp       # a check to ensure position isn't read incorrectly. Occassionally happens at the beginning of a move
+       except ValueError:
+	  print 'ValueError'
+    else:
+	ser.flushInput()		 # clear buffer in case the serial responses get jumbled
+    return pos_meters
 
-def handle_power_io(req):
-    if req.io == 0:
-        print "Returning checksum for power off"
-    elif req.io == 1:
-        print "Returning checksum for power on"
-    return PowerIOResponse(power(req.io))
-
-def handle_home(req):
-    print "Returning checksum for home command"
-    return HomeCmdResponse(home())
-
+#these handlers vary depending on if the input is pulses or meters
 def handle_move_pulses(req):
-    print "Returning checksum for move of %d pulses"%req.pulses
-    return MovePulsesResponse(abs_move(req.pulses))
+    return MovePulsesResponse(abs_move(req.pulses, 0))
 
 def handle_move_meters(req):
-    print "Returning checksum for move of %d meters"%req.meters
     pulses = int(req.meters*1000*8000/lead)
-    return MoveMetersResponse(abs_move(pulses))
+    return MoveMetersResponse(abs_move(pulses, 1))
 
-def handle_vel_acc(req):
-    print "Returning checksum for velocity change to %d and acceleration to %d"%(req.vel, req.acc)
-    return VelAccResponse(vel_acc(req.vel, req.acc))
+#current position publisher
+def talker():
+    global pos_meters
+    pos_meters = 1
+    pub = rospy.Publisher('/car/pos', Float32, queue_size=10)
+    rate = rospy.Rate(10)                # 10hz
+    while not rospy.is_shutdown():
+        pos_meters = pos_inq(pos_meters)
+	pub.publish(pos_meters)
+        rate.sleep()
 
+#all functions and services initializations
 def services_init():
     rospy.init_node('robo_cylinder_services')
-    status_s = rospy.Service('status_service', StatusUpdate, handle_status)
-    power_io_s = rospy.Service('power_io', PowerIO, handle_power_io)
-    home_s = rospy.Service('home_service', HomeCmd, handle_home)
+    ser_init()
+    char_init()
+    param_init()
+    status_s = rospy.Service('status_service', StatusUpdate, status)
+    power_io_s = rospy.Service('power_io', PowerIO, power)
+    home_s = rospy.Service('home_service', HomeCmd, home)
     move_pulses_s = rospy.Service('move_pulses', MovePulses, handle_move_pulses)
     move_meters_s = rospy.Service('move_meters', MoveMeters, handle_move_meters)
-    vel_acc_s = rospy.Service('vel_acc', VelAcc, handle_vel_acc)    
-    print "All services ready."
+    vel_acc_s = rospy.Service('vel_acc', VelAcc, vel_acc)    
+    try:
+        talker()
+    except rospy.ROSInterruptException:
+        pass
+
     rospy.spin()
 
 if __name__ == "__main__":
