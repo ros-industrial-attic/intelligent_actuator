@@ -1,0 +1,15 @@
+<launch>
+  <arg name="base_link" default="base_link" doc="Enter argument [base_link:your_desired_link]"/>
+  <arg name="port" default="/dev/ttyUSB0" doc="Enter argument [port:your_serial_port]"/>
+  <arg name="axis" default="0" doc="Enter argument [axis:your_axis_number]"/>
+  <arg name="lead" default="10" doc="Enter argument [lead:your_lead_screw_val]"/>
+
+  <node name="robo_control" pkg="robo_cylinder" type="robo_cylinder_services.py" respawn="true" >
+    <param name="port" type="string" value="$(arg port)" />
+    <param name="axis" type="int" value="$(arg axis)" />
+    <param name="lead" type="int" value="$(arg lead)" />
+  </node>
+  <node name="car_link_broadcaster" pkg="robo_cylinder" type="car_tf_broadcaster.py" respawn="true" >
+    <param name="robo_base" type="string" value="$(arg base_link)" />
+  </node>
+</launch>
