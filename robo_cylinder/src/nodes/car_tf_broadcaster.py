@@ -1,4 +1,6 @@
 
+#!/usr/bin/env python
+
 # Software License Agreement (Apache License)
 # 
 # Copyright (c) 2014, Southwest Research Institute
@@ -15,7 +17,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#!/usr/bin/env python  
 import roslib
 import rospy
 
