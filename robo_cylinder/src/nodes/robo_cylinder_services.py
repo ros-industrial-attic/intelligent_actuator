@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python
 
 # Software License Agreement (Apache License)
@@ -98,17 +97,47 @@ def power(req):
 #Homing signal
 def home(req):
     direction = '9'
+    init_pos = pos_meters
+    if init_pos <= 0.05: # if the position is already home, it is true already. no need to proceed
+        rospy.loginfo('Currently at home! \n')
+        return True
     msg = axis_str + 'o' + zero + direction + 8*zero
     bcc_int = axis_val + ord('o') + ord(direction) + 9*ord(zero)
     bcc = bcc_calc(bcc_int)
     csum = stx + msg + bcc + etx
+    ser.flushInput() # clear buffer in case the serial responses get jumbled
     ser.write(csum)
     rospy.loginfo('Homing command checksum sent: %s\n'%csum)
-    return True
+    rospy.sleep(5) #gives the car time to move (5 seconds)
+    if pos_meters != init_pos: # if it has moved, continue to wait in case it isn't home yet
+        #depending on where the car is, we need to wait longer to get an accurate true/false
+        if init_pos >= 0.75:
+            rospy.sleep(40)
+        elif init_pos >= 0.7:
+            rospy.sleep(35)
+        elif init_pos >= 0.6:
+            rospy.sleep(30)
+        elif init_pos >= 0.5:
+            rospy.sleep(25)
+        elif init_pos >= 0.4:
+            rospy.sleep(20)
+        elif init_pos >= 0.3:
+            rospy.sleep(15)
+        elif init_pos >= 0.2:
+            rospy.sleep(10)
+        else:
+            rospy.sleep(5)
+    else: # if it hasn't moved in 5 seconds, it's already false
+        return False
+    if pos_meters == 0.000005: # if the final_position is at home, it's true.
+        return True
+    else: # if it faults out randomly after not moving, this will give it a false.
+        return False
 
 #Absolute positioning signal
 def abs_move(pos, converted):
     position = pos
+    init_pos = pos_meters #initial position is defined here
     #protocol subtracts position from FFFFFFFF if the robot homes to the motor end
     position = hex(16**8 - 1 - int(round(position))).upper()[2:10]
     msg = axis_str + 'a' + position + 2*zero
@@ -118,16 +147,85 @@ def abs_move(pos, converted):
     bcc_int = axis_val + ord('a') + pos_int + 2*ord(zero)
     bcc = bcc_calc(bcc_int)
     csum = stx + msg + bcc + etx
+    ser.flushInput()		 # clear buffer in case the serial responses get jumbled
     ser.write(csum)
     rospy.loginfo('Position command checksum sent: %s\n'%csum)
+    rospy.sleep(5) #gives the car time to move
+    #MOVE_METERS
     if converted:
     	meters = pos*lead/8000.0/1000.0 #the 8000 is a constant from protocol conversion. 1000 is conv from mm to meters
-    return True
+        max_meter = meters+0.0000075 #max value from the meter, sometimes is a tiny bit off
+        min_meter = meters-0.0000015 #min value from the meter, sometimes is a tiny bit off
+        diff = max_meter - init_pos #difference in the max meter value and initial position
+
+        if (init_pos <= max_meter and init_pos >= min_meter): #if we're already there, it's true
+            rospy.loginfo('Currently at desired position! \n')
+            return True
+
+        #gives car time to move depending on distance needed to move
+        if diff >= 0.75:
+            rospy.sleep(10)
+        elif diff >= 0.7:
+            rospy.sleep(9)
+        elif diff >= 0.6:
+            rospy.sleep(8)
+        elif diff >= 0.5:
+            rospy.sleep(7)
+        elif diff >= 0.4:
+            rospy.sleep(6)
+        elif diff >= 0.3:
+            rospy.sleep(5)
+        else:
+            rospy.sleep(4)
+
+        rospy.loginfo('Position in meters: %s\n'%pos_meters) #displays position in meters
+        if (pos_meters <= max_meter and pos_meters >= min_meter): #if the position of the car is basically at the desired position, it's true.
+            return True
+        else:
+            return False
+
+    #MOVE_PULSES -> something is wrong with the encoder (or something less obvious is wrong)
+    else:
+        min_pulse = pos-10000.0 #min pulse value for basically same position
+        max_pulse = pos+10000.0 #max pulse value for basically same position
+        init_pulse = init_pos*1000.0*8000.0/lead #converts initial position to pulses
+        pos_pulse = pos_meters*1000.0*8000.0/lead #converts position to pulses
+        diff_pulse = max_pulse - init_pulse #difference in the max meter value and initial position
+
+        if (init_pulse <= max_pulse and init_pulse >= min_pulse): #if we're already there, it's true
+            rospy.loginfo('Currently at desired position! \n')
+            return True
+
+        #gives car time to move depending on distance needed to move
+        if diff_pulse >= 600000.0:
+            rospy.sleep(11)
+        elif diff_pulse >= 560000.0:
+            rospy.sleep(10)
+        elif diff_pulse >= 480000.0:
+            rospy.sleep(9)
+        elif diff_pulse >= 400000.0:
+            rospy.sleep(8)
+        elif diff_pulse >= 320000.0:
+            rospy.sleep(7)
+        elif diff_pulse >= 240000.0:
+            rospy.sleep(6)
+        else:
+            rospy.sleep(5)
+
+        rospy.loginfo('Position in pulses: %s\n'%pos_pulse) #displays position in pulses
+        if (pos_pulse <= max_pulse and pos_pulse >= min_pulse): #if the position of the car is basically at the desired position, it's true.
+            return True
+        else:
+            return False
+
 
 #Velocity and acceleration change signal
 def vel_acc(req):
     vel = req.vel
     acc = req.acc
+
+    ##DEBUG
+    rospy.loginfo('Current velocity: %s\n'%vel)
 
     #conversions defined in protocol instructions
     vel = vel*100*300/lead
@@ -150,6 +248,7 @@ def vel_acc(req):
     bcc_int = axis_val + ord('v') + ord('2') + vel_acc_int + ord(zero)
     bcc = bcc_calc(bcc_int)
     csum = stx + msg + bcc + etx
+    ser.flushInput()		 # clear buffer in case the serial responses get jumbled
     ser.write(csum)
     rospy.loginfo('Velocity and acceleration change checksum sent: %s\n'%csum)
     return True
@@ -160,6 +259,7 @@ def pos_inq(pos_meters):
     bcc_int = axis_val + ord('R') + 2*ord('4') + ord('7') + 7*ord(zero)
     bcc = bcc_calc(bcc_int)
     csum = stx + msg + bcc + etx
+    ser.flushInput()		 # clear buffer in case the serial responses get jumbled
     ser.write(csum)
     response = ser.read(16)
     if len(response) == 0: response = '_'
