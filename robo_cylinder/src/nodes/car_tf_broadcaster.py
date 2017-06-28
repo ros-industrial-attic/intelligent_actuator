@@ -23,19 +23,21 @@ import tf
 from std_msgs.msg import Float32
 
 def handle_car_pos(msg, car_link):
-    br = tf.TransformBroadcaster()
-    base_link = rospy.get_param('~robo_base')
+    br = tf.TransformBroadcaster() # calls transform broadcast
+    base_link = rospy.get_param('~robo_base') # gets base link value from launch file \
+    # sends transform information
     br.sendTransform((msg.data, 0, 0),
                      (0, 0, 0, 0),
                      rospy.Time.now(),
                      car_link,
                      base_link)
 
-if __name__ == '__main__':
-    rospy.init_node('car_tf_broadcaster')
-    car_link = "car_link"
+if __name__ == '__main__': # if the name is main
+    rospy.init_node('car_tf_broadcaster') #initialize this node
+    car_link = "car_link" #establish car link
+    # subscribes to handle_car publisher
     rospy.Subscriber('/car/pos',
                      Float32,
                      handle_car_pos,
                      car_link)
-    rospy.spin()
+    rospy.spin() # wait 
