@@ -96,128 +96,139 @@ def power(req):
 
 # Homing signal
 def home(req):
-    direction = '9' # sets direction
-    init_pos = pos_meters # initial position of car is defined here.
-    if init_pos <= 0.05: #  if the position is already home, it is true already. no need to proceed
-        rospy.loginfo('Currently at home! \n')
-        return True
-    msg = axis_str + 'o' + zero + direction + 8*zero # creates message
-    bcc_int = axis_val + ord('o') + ord(direction) + 9*ord(zero) # formula for bcc char
-    bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
-    csum = stx + msg + bcc + etx # creates the package to send into the controller
-    ser.flushInput() #  clear buffer in case the serial responses get jumbled
-    ser.write(csum) # writes to the serial communication
-    rospy.loginfo('Homing command checksum sent: %s\n'%csum) # allows user to know what message package was sent
-    rospy.sleep(5) # gives the car time to move (5 seconds)
-    if pos_meters != init_pos: #  if it has moved, continue to wait in case it isn't home yet
-        # depending on where the car is, we need to wait longer to get an accurate true/false
-        if init_pos >= 0.75:
-            rospy.sleep(40)
-        elif init_pos >= 0.7:
-            rospy.sleep(35)
-        elif init_pos >= 0.6:
-            rospy.sleep(30)
-        elif init_pos >= 0.5:
-            rospy.sleep(25)
-        elif init_pos >= 0.4:
-            rospy.sleep(20)
-        elif init_pos >= 0.3:
-            rospy.sleep(15)
-        elif init_pos >= 0.2:
-            rospy.sleep(10)
-        else:
-            rospy.sleep(5)
-    else: #  if it hasn't moved in 5 seconds, it's already false
+    incorrect = 0
+    while incorrect < 5:
+        direction = '9' # sets direction
+        init_pos = pos_meters # initial position of car is defined here.
+        if init_pos <= 0.05: #  if the position is already home, it is true already. no need to proceed
+            rospy.loginfo('Currently at home! \n')
+            return True
+        msg = axis_str + 'o' + zero + direction + 8*zero # creates message
+        bcc_int = axis_val + ord('o') + ord(direction) + 9*ord(zero) # formula for bcc char
+        bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
+        csum = stx + msg + bcc + etx # creates the package to send into the controller
+        ser.flushInput() #  clear buffer in case the serial responses get jumbled
+        ser.write(csum) # writes to the serial communication
+        rospy.loginfo('Homing command checksum sent: %s\n'%csum) # allows user to know what message package was sent
+        rospy.sleep(5) # gives the car time to move (5 seconds)
+        if pos_meters != init_pos: #  if it has moved, continue to wait in case it isn't home yet
+            # depending on where the car is, we need to wait longer to get an accurate true/false
+            if init_pos >= 0.75:
+                rospy.sleep(40)
+            elif init_pos >= 0.7:
+                rospy.sleep(35)
+            elif init_pos >= 0.6:
+                rospy.sleep(30)
+            elif init_pos >= 0.5:
+                rospy.sleep(25)
+            elif init_pos >= 0.4:
+                rospy.sleep(20)
+            elif init_pos >= 0.3:
+                rospy.sleep(15)
+            elif init_pos >= 0.2:
+                rospy.sleep(10)
+            else:
+                rospy.sleep(5)
+        else: #  if it hasn't moved in 5 seconds, it needs to loop through again to try
+            incorrect = incorrect + 1
+        if pos_meters == 0.000005: #  if the final_position is at home, it's true.
+            return True
+        else: #  if it faults out randomly after not moving, loop through again
+            incorrect = incorrect + 1
+    if incorrect == 5: #the second loop didn't work, there is an actual problem.
         return False
-    if pos_meters == 0.000005: #  if the final_position is at home, it's true.
-        return True
-    else: #  if it faults out randomly after not moving, this will give it a false.
-        return False
+
 
 # Absolute positioning signal
 def abs_move(pos, converted):
-    position = pos # var position is the passed in var pos from command line
-    init_pos = pos_meters # initial position is defined here
-    # protocol subtracts position from FFFFFFFF if the robot homes to the motor end
-    position = hex(16**8 - 1 - int(round(position))).upper()[2:10]
-    msg = axis_str + 'a' + position + 2*zero # creates message
-    pos_int = 0 # clears string
-    for i in range(0, 8):               # adds up the ascii values of each character of the hex position
-        pos_int += int(position[i].encode("hex"), 16)
-    bcc_int = axis_val + ord('a') + pos_int + 2*ord(zero) # formula for bcc char
-    bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
-    csum = stx + msg + bcc + etx # creates the package to send into the controller
-    ser.flushInput() #  clear buffer in case the serial responses get jumbled
-    ser.write(csum) # writes to the serial communication
-    rospy.loginfo('Position command checksum sent: %s\n'%csum) # allows user to know what message package was sent
-    rospy.sleep(5) # gives the car time to move
+    incorrect = 0
+    while incorrect < 5:
+        position = pos # var position is the passed in var pos from command line
+        init_pos = pos_meters # initial position is defined here
+        # protocol subtracts position from FFFFFFFF if the robot homes to the motor end
+        position = hex(16**8 - 1 - int(round(position))).upper()[2:10]
+        msg = axis_str + 'a' + position + 2*zero # creates message
+        pos_int = 0 # clears string
+        for i in range(0, 8):               # adds up the ascii values of each character of the hex position
+            pos_int += int(position[i].encode("hex"), 16)
+        bcc_int = axis_val + ord('a') + pos_int + 2*ord(zero) # formula for bcc char
+        bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
+        csum = stx + msg + bcc + etx # creates the package to send into the controller
+        ser.flushInput() #  clear buffer in case the serial responses get jumbled
+        ser.write(csum) # writes to the serial communication
+        rospy.loginfo('Position command checksum sent: %s\n'%csum) # allows user to know what message package was sent
+        rospy.sleep(5) # gives the car time to move
 
-    # # #  MOVE_METERS # # # 
-    if converted: # if move_meters is called, must convert pulses to position
-    	meters = pos*lead/8000.0/1000.0 # the 8000 is a constant from protocol conversion. 1000 is conv from mm to meters
-        max_meter = meters+0.0000075 # max value from the meter, sometimes is a tiny bit off
-        min_meter = meters-0.0000015 # min value from the meter, sometimes is a tiny bit off
-        diff = max_meter - init_pos # difference in the max meter value and initial position
+        # # #  MOVE_METERS # # #
+        if converted: # if move_meters is called, must convert pulses to position
+            meters = pos*lead/8000.0/1000.0 # the 8000 is a constant from protocol conversion. 1000 is conv from mm to meters
+            max_meter = meters+0.0000075 # max value from the meter, sometimes is a tiny bit off
+            min_meter = meters-0.0000015 # min value from the meter, sometimes is a tiny bit off
+            diff = max_meter - init_pos # difference in the max meter value and initial position
 
-        if (init_pos <= max_meter and init_pos >= min_meter): # if we're already there, it's true
-            rospy.loginfo('Currently at desired position! \n')
-            return True
+            if (init_pos <= max_meter and init_pos >= min_meter): # if we're already there, it's true
+                rospy.loginfo('Position in meters: %s\n'%pos_meters) # displays position in meters
+                return True
 
-        # gives car time to move depending on distance needed to move
-        if diff >= 0.75:
-            rospy.sleep(10)
-        elif diff >= 0.7:
-            rospy.sleep(9)
-        elif diff >= 0.6:
-            rospy.sleep(8)
-        elif diff >= 0.5:
-            rospy.sleep(7)
-        elif diff >= 0.4:
-            rospy.sleep(6)
-        elif diff >= 0.3:
-            rospy.sleep(5)
+            # gives car time to move depending on distance needed to move
+            if diff >= 0.75:
+                rospy.sleep(10)
+            elif diff >= 0.7:
+                rospy.sleep(9)
+            elif diff >= 0.6:
+                rospy.sleep(8)
+            elif diff >= 0.5:
+                rospy.sleep(7)
+            elif diff >= 0.4:
+                rospy.sleep(6)
+            elif diff >= 0.3:
+                rospy.sleep(5)
+            else:
+                rospy.sleep(4)
+
+            if (pos_meters <= max_meter and pos_meters >= min_meter): # if the position of the car is basically at the desired position, it's true.
+                rospy.loginfo('Position in meters: %s\n'%pos_meters) # displays position in meters
+                return True
+
+            else:
+                incorrect = incorrect + 1
+
+        # # #  MOVE_PULSES # # #  -> slight problem when asked to go to 480,000 pulses but loop takes care of it.
         else:
-            rospy.sleep(4)
+            min_pulse = pos-1000.0 # min pulse value for basically same position
+            max_pulse = pos+1000.0 # max pulse value for basically same position
+            init_pulse = init_pos*1000.0*8000.0/lead # converts initial position to pulses
+            pos_pulse = pos_meters*1000.0*8000.0/lead # converts position to pulses
+            diff_pulse = max_pulse - init_pulse # difference in the max meter value and initial position
 
-        rospy.loginfo('Position in meters: %s\n'%pos_meters) # displays position in meters
-        if (pos_meters <= max_meter and pos_meters >= min_meter): # if the position of the car is basically at the desired position, it's true.
-            return True
-        else:
-            return False
+            if (init_pulse <= max_pulse and init_pulse >= min_pulse): # if we're already there, it's true
+                rospy.loginfo('Position in pulses: %s\n'%pos_pulse) # displays position in pulses
+                return True
 
-    # # #  MOVE_PULSES # # #  -> something is wrong with the encoder (or something less obvious is wrong)
-    else:
-        min_pulse = pos-10000.0 # min pulse value for basically same position
-        max_pulse = pos+10000.0 # max pulse value for basically same position
-        init_pulse = init_pos*1000.0*8000.0/lead # converts initial position to pulses
-        pos_pulse = pos_meters*1000.0*8000.0/lead # converts position to pulses
-        diff_pulse = max_pulse - init_pulse # difference in the max meter value and initial position
+            # gives car time to move depending on distance needed to move
+            if diff_pulse >= 600000.0:
+                rospy.sleep(11)
+            elif diff_pulse >= 560000.0:
+                rospy.sleep(0)
+            elif diff_pulse >= 480000.0:
+                rospy.sleep(9)
+            elif diff_pulse >= 400000.0:
+                rospy.sleep(8)
+            elif diff_pulse >= 320000.0:
+                rospy.sleep(7)
+            elif diff_pulse >= 240000.0:
+                rospy.sleep(6)
+            else:
+                rospy.sleep(5)
 
-        if (init_pulse <= max_pulse and init_pulse >= min_pulse): # if we're already there, it's true
-            rospy.loginfo('Currently at desired position! \n')
-            return True
+            if (pos_pulse <= max_pulse and pos_pulse >= min_pulse): # if the position of the car is basically at the desired position, it's true.
+                rospy.loginfo('Position in pulses: %s\n'%pos_pulse) # displays position in pulses
+                return True
+            else: #loops through again to try and resend command
+                incorrect = incorrect + 1
 
-        # gives car time to move depending on distance needed to move
-        if diff_pulse >= 600000.0:
-            rospy.sleep(11)
-        elif diff_pulse >= 560000.0:
-            rospy.sleep(10)
-        elif diff_pulse >= 480000.0:
-            rospy.sleep(9)
-        elif diff_pulse >= 400000.0:
-            rospy.sleep(8)
-        elif diff_pulse >= 320000.0:
-            rospy.sleep(7)
-        elif diff_pulse >= 240000.0:
-            rospy.sleep(6)
-        else:
-            rospy.sleep(5)
-
-        rospy.loginfo('Position in pulses: %s\n'%pos_pulse) # displays position in pulses
-        if (pos_pulse <= max_pulse and pos_pulse >= min_pulse): # if the position of the car is basically at the desired position, it's true.
-            return True
-        else:
-            return False
+    if incorrect  == 5: #if looping through again doesn't work, a fault has occurred
+        return False
 
 
 # Velocity and acceleration change signal
