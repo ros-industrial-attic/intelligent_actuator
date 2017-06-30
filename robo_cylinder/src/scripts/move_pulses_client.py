@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 
 # Software License Agreement (Apache License)
 # 
@@ -15,29 +16,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#!/usr/bin/env python
-
+# imports namespace
 from robo_cylinder.srv import *
 
 import sys
 import rospy
 
 def move_pulses_client(pos):
-    rospy.wait_for_service('move_pulses')
+    rospy.wait_for_service('move_pulses') # wait for service call
     try:
-        move_pulses = rospy.ServiceProxy('move_pulses', MovePulses)
+        move_pulses = rospy.ServiceProxy('move_pulses', MovePulses) # tries calls service
         resp1 = move_pulses(pos)
-        return resp1.csum
+        return resp1.csum # returns value from service call
     except rospy.ServiceException, e:
         print "Service call failed: %s"%e
     
 def usage():
     return "%s [pos]"%sys.argv[0]
 
-if __name__ == "__main__":
+if __name__ == "__main__": #if name is main and sys.argv length is 2, pos will equal first char of sys.agrv
     if len(sys.argv) == 2:
         pos = int(sys.argv[1])
-    else:
+    else: #if not, exit
         print usage()
         sys.exit(1)
     print "Requesting move of %d pulses"%(pos)
