@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python
 
 # Software License Agreement (Apache License)
