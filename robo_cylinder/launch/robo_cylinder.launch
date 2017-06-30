@@ -4,7 +4,7 @@
   <arg name="axis" default="0" doc="Enter argument [axis:your_axis_number]"/>
   <arg name="lead" default="10" doc="Enter argument [lead:your_lead_screw_val]"/>
 
-  <node name="robo_control" pkg="robo_cylinder" type="robo_cylinder_services.py" respawn="true" >
+  <node name="robo_control" pkg="robo_cylinder" type="robo_cylinder_services.py" respawn="true" output="screen" >
     <param name="port" type="string" value="$(arg port)" />
     <param name="axis" type="int" value="$(arg axis)" />
     <param name="lead" type="int" value="$(arg lead)" />
