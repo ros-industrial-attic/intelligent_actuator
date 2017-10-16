@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 
 #  Software License Agreement (Apache License)
-#  
+#
 #  Copyright (c) 2014, Southwest Research Institute
-#  
+#
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
 #  You may obtain a copy of the License at
-#  
+#
 #  http://www.apache.org/licenses/LICENSE-2.0
-#  
+#
 #  Unless required by applicable law or agreed to in writing, software
 #  distributed under the License is distributed on an "AS IS" BASIS,
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -26,299 +26,266 @@ import threading
 
 from std_msgs.msg import Float32
 
-# configure the serial connections
-def ser_init():
-    global ser
-    ser = serial.Serial(
-        port=rospy.get_param('~port'),
-    	baudrate=9600,
-    	parity=serial.PARITY_NONE,
-    	stopbits=serial.STOPBITS_ONE,
-    	bytesize=serial.EIGHTBITS,
-    	timeout=3
-    )
-    global ser_lock
-    ser_lock = threading.Lock()
-    return
+class RoboCylinder:
+    def __init__(self):
 
-# define global character shortcuts for checksums
-def char_init():
-    global stx
-    global etx
-    global zero
+        self.serial_lock = threading.Lock()
+        self.parameter_lock = threading.Lock()
 
-    zero = '0'
-    # start and end characters for each checksum
-    stx = "02".decode("hex")
-    etx = "03".decode("hex")
+        port=rospy.get_param('~port')
+        self.ser = serial.Serial(port, baudrate=9600, parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE, bytesize=serial.EIGHTBITS, timeout=1)
+        if(self.ser.isOpen() == False):
+            self.ser.open()
 
-# define input parameters specific to this robo cylinder
-# axis can be changed to 0-15. Lead screw is somewhere between 2-10mm
-def param_init():
-    global axis
-    global axis_str
-    global axis_val
-    global lead
+        self.zero = '0'
+        # start and end characters for each checksum
+        self.eq =  "05".decode("hex")
+        self.stx = "02".decode("hex")
+        self.etx = "03".decode("hex")
 
-    axis = rospy.get_param('~axis')
-    axis_str = hex(axis).upper()[2:]
-    axis_val = int(axis_str.encode("hex"), 16)
-    lead = rospy.get_param('~lead')
+        self.axis = rospy.get_param('~axis')
+        self.axis_str = hex(self.axis).upper()[2:]
+        self.axis_val = int(self.axis_str.encode("hex"), 16)
+        self.lead = rospy.get_param('~lead')
 
-# BCC lsb calculator to check communication integrity
-def bcc_calc(bcc_int):
-    bcc = (~bcc_int & 0xFFF) + 1        # 2's complement calculation
-    for i in range(11, 7, -1):
-        if bcc > 2**i:
-            bcc -= 2**i                 # takes the LSB of the integer
-    bcc = hex(bcc).upper()[2:]          # converts the integer to hex characters
-    if len(bcc) == 1: bcc = '0' + bcc   # protocol needs BCC to be two characters
-    return bcc
+        self.position_meters = 0.0
 
-# Retrieve status signal
-def status(req):
-    msg = axis_str + 'n' + 10*zero # creates message
-    # BCC is calculated based on the ascii values of the 12-character message (everything but the stx, bcc, and etx)
-    bcc_int = axis_val + ord('n') + 10*ord(zero) # formula for bcc char
-    bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
-    csum = stx + msg + bcc + etx # creates the package to send into the controller
-    ser_lock.acquire()
-    ser.flushInput()
-    ser.write(csum) # writes to the serial communication
-    ser_lock.release()
-    rospy.loginfo('Status request checksum sent: %s\n'%csum) # allows user to know what message package was sent
-    return True
+        self.position_pub = rospy.Publisher('/car/pos', Float32, queue_size=10)
+        self.status_s = rospy.Service('status_service', StatusUpdate, self.status)
+        self.power_io_s = rospy.Service('power_io', PowerIO, self.power)
+        self.home_s = rospy.Service('home_service', HomeCmd, self.home)
+        self.move_pulses_s = rospy.Service('move_pulses', MovePulses, self.handle_move_pulses)
+        self.move_meters_s = rospy.Service('move_meters', MoveMeters, self.handle_move_meters)
+        self.vel_acc_s = rospy.Service('vel_acc', VelAcc, self.vel_acc)
+        self.string_cmd_s = rospy.Service('string_cmd', StringCmd, self.string_command)
 
-# Power signal
-def power(req):
-    io = str(req.io) # requests io information
-    msg = axis_str + 'q' + io + 9*zero # creates message
-    bcc_int = axis_val + ord('q') + ord(io) + 9*ord(zero) # formula for bcc char
-    bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
-    csum = stx + msg + bcc + etx # creates the package to send into the controller
-    ser_lock.acquire()
-    ser.flushInput()
-    ser.write(csum) # writes to the serial communication
-    ser_lock.release()
-    rospy.loginfo("Power checksum sent: %s\n"%csum) # allows user to know what message package was sent
-    return True
+        # These startup commands were taken from the RoboCylinder WinXP program using a serial communication sniffer program
+        start_commands = []
+        c = self.axis_str + "ptrw0300000"  # Set the RTIM (minimum delay time) value
+        start_commands.append(c)
+        c = self.axis_str + "T4000000090"  # Set the Baud rate memory address
+        start_commands.append(c)
+        c = self.axis_str + "W4000000040"  # Set Baud rate to 9600
+        start_commands.append(c)
+        c = self.axis_str + "T40000000C0"  # Set the RTIM (minimum delay time) memory address
+        start_commands.append(c)
+        c = self.axis_str + "W4000000030"  # Set RTIM
+        start_commands.append(c)
+        c = self.axis_str + "q1000000000"  # Turn on axis servo power
+        start_commands.append(c)
+        c = 14*self.eq
+        start_commands.append(c)
+        start_commands.append(c)
+        start_commands.append(c)
 
-# Homing signal
-def home(req):
-    error = 0
-    init_pos = pos_meters # initial position of car is defined here.
-    if init_pos <= 0.05: #  if the position is already home, it is true already. no need to proceed
-        print'Currently at home!'
+        for command in start_commands:
+            self.serial_read_write(command)
+
+        rospy.sleep(0.150)
+
+        worker_thread = threading.Thread(target=self.talker())
+        worker_thread.start()
+
+    # BCC lsb calculator to check communication integrity
+    def bcc_calc(self, bcc_int):
+        bcc = (~bcc_int & 0xFFF) + 1        # 2's complement calculation (= one's complement + 1)
+        for i in range(11, 7, -1):
+            if bcc > 2**i:
+                bcc -= 2**i                 # takes the LSB of the integer
+        bcc = hex(bcc).upper()[2:]          # converts the integer to hex characters
+        if len(bcc) == 1: bcc = '0' + bcc   # protocol needs BCC to be two characters
+        return bcc
+
+    def serial_read_write(self, msg):
+
+        bcc_int = 0
+
+        for c in range(len(msg)-1,-1,-1):
+            bcc_int += ord(msg[c])
+        bcc = self.bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
+
+        csum = self.stx + msg + bcc + self.etx # creates the package to send into the controller
+        lock_timeout = 1.0
+        response = ""
+        if self.serial_lock.acquire():
+            self.ser.flushInput()
+            self.ser.flushOutput()
+            self.ser.write(csum) # writes to the serial communication
+
+            rospy.loginfo("csum   %s"%csum)
+            rospy.sleep(0.1)
+            if not self.ser.inWaiting():
+                rospy.logerr("no data to read")
+            response = self.ser.read(16)
+            rospy.loginfo("response received:  %s"%response)
+            #TODO: Check the response to see if the message was sent/received.
+            #      If response is empty/invalid, need to try again or throw error.
+            self.serial_lock.release()
+        else:
+            rospy.logerr("Failed to acquire serial lock in %d seconds"%lock_timeout)
+
+        return response
+
+    def string_command(self, req):
+        self.serial_read_write(req.command)
         return True
-    while (pos_meters == init_pos): # while false, keeping sending command until true
+
+    # Retrieve status signal
+    def status(self, req):
+        msg = self.axis_str + 'n' + 10*self.zero # creates message
+        self.serial_read_write(msg)
+        return True
+
+    # Power signal
+    def power(self, req):
+        io = str(req.io) # requests io information
+        msg = self.axis_str + 'q' + io + 9*self.zero # creates message
+        self.serial_read_write(msg)
+        return True
+
+    # Velocity and acceleration change signal
+    def vel_acc(self, req):
+        vel = req.vel # gets velocity from command line
+        acc = req.acc # gets acceleration from command line
+
+        # # DEBUG
+        rospy.loginfo('Current velocity: %s\n'%vel)
+
+        # conversions defined in protocol instructions
+        vel = vel*100*300/self.lead
+        vel = hex(int(vel)).upper()[2:]
+
+        acc = acc/9.8*5883.99/self.lead
+        acc = hex(int(acc)).upper()[2:]
+
+        # protocol requires length of 4 characters
+        while len(acc) < 4:
+            acc = '0' + acc
+        while len(vel) < 4:
+            vel = '0' + vel
+
+        msg = self.axis_str + 'v' + '2' + vel + acc + self.zero # creates message
+        self.serial_read_write(msg)
+        return True
+
+    # Homing signal
+    def home(self, req):
         direction = '9' # sets direction
-        msg = axis_str + 'o' + zero + direction + 8*zero # creates message
-        bcc_int = axis_val + ord('o') + ord(direction) + 9*ord(zero) # formula for bcc char
-        bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
-        csum = stx + msg + bcc + etx # creates the package to send into the controller
-        ser_lock.acquire()
-        ser.flushInput() #  clear buffer in case the serial responses get jumbled
-        ser.write(csum) # writes to the serial communication
-        ser_lock.release()
-        rospy.loginfo('Homing command checksum sent: %s\n'%csum) # allows user to know what message package was sent
-        rospy.sleep(5) # gives the car time to move (5 seconds)
-	error = error + 1
-	#rospy.loginfo('Error value: %s\n'%error) # displays value of error variable
-	if (error == 5):
+        msg = self.axis_str + 'o' + self.zero + direction + 8*self.zero # creates message
+        self.serial_read_write(msg)
+        timeout = 60.0
+        return self.check_move_is_done(0.0, timeout)
+
+    # Position inquiry
+    def pos_inq(self):
+        msg = self.axis_str + 'R4' + 4*self.zero + '74' + 3*self.zero # creates message
+        response = self.serial_read_write(msg)
+
+        if len(response) == 0: response = '_' # if no response, the response is blank
+        if response[0] == self.stx: # if the response is actually a message package
+           try:
+              pos_pulses = int(response[5:13], 16) # reads the response and collects pulse information
+              pos_temp = float(((16**8-1)-pos_pulses)*10/8000.0/1000.0) # calculates the meters from the pulses
+              if pos_temp < 10: # if the meters position data is under 10 (aka correct)
+                 return pos_temp       #  a check to ensure position isn't read incorrectly. Occassionally happens at the beginning of a move
+           except ValueError:
+              print 'ValueError' # if the pos_temp gives an incorrect or impossible value, print Value Error so the user knows
+
+        return 0.0 # returns the var pos_meters
+
+    def pulses_to_meters(self, pulses):
+        meters = (float(pulses) * float(self.lead)/1000.0/8000.0)
+        return meters
+
+    def meters_to_pulses(self, meters):
+        pulses = int(meters*1000*8000/self.lead)
+        return pulses
+
+    # this will check and wait for the rail to reach a target, returns True when reached, False if there is a timeout
+    def check_move_is_done(self, target, timeout):
+        iters = 5
+        rate = rospy.Rate(iters)
+        target_min = target - 0.001
+        target_max = target + 0.001
+        current_position = self.get_position()
+        count = 0
+        timeout = 60
+        while not(current_position < target_max and current_position > target_min) and count < (timeout * iters):
+            rate.sleep()
+            current_position = self.get_position()
+            count += 1
+
+        # check to make sure we reached the target
+        if current_position > target_min and current_position < target_max:
+            return True
+        else:
             return False
-    if (pos_meters != init_pos):
-        while (pos_meters > 0.05):
-            rospy.sleep(1)
-        if (pos_meters <= 0.05): # if it is home, return true.
-            print'Home reached!'
-	    rospy.sleep(1) #gives time in between commands 
-            return True
-    
 
+    def move_meters(self, position):
+        pulses = self.meters_to_pulses(position)
+        return self.move_pulses(pulses)
 
-# Absolute positioning signal
-def abs_move(pos, converted):
-    meters = pos*lead/8000.0/1000.0 # the 8000 is a constant from protocol conversion. 1000 is conv from mm to meters
-    init_pos = pos_meters
-    init_pulse = init_pos*1000.0*8000.0/lead # converts initial position to pulses
-    pos_pulse = pos_meters*1000.0*8000.0/lead # converts position to pulses
+    def move_pulses(self, pulses):
+        start_position = self.get_position()
 
-    # # #  MOVE_METERS # # #
-    if converted: # if move_meters is called, must convert pulses to position
- 	error = 0
-        max_meter= meters+0.005 # max value from the meter, sometimes is a tiny bit off
-        min_meter = meters-0.005 # min value from the meter, sometimes is a tiny bit off
-        if (init_pos <= max_meter and init_pos >= min_meter): # if we're already there, it's true
-            rospy.loginfo('Position in meters: %s\n'%pos_meters) # displays position in meters
-            return True
-        while (pos_meters == init_pos): # while false, keeping sending command until true
-            position = pos # var position is the passed in var pos from command line
-            #protocol subtracts position from FFFFFFFF if the robot homes to the motor end
-            position = hex(16**8 - 1 - int(round(position))).upper()[2:10]
-            msg = axis_str + 'a' + position + 2*zero # creates message
-            pos_int = 0 # clears string
-            for i in range(0, 8):               # adds up the ascii values of each character of the hex position
-                pos_int += int(position[i].encode("hex"), 16)
-            bcc_int = axis_val + ord('a') + pos_int + 2*ord(zero) # formula for bcc char
-            bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
-            csum = stx + msg + bcc + etx # creates the package to send into the controller
-            ser_lock.acquire()
-            ser.flushInput() #  clear buffer in case the serial responses get jumbled
-            ser.write(csum) # writes to the serial communication
-            ser_lock.release()
-            rospy.loginfo('Position command checksum sent: %s\n'%csum) # allows user to know what message package was sent
-            rospy.sleep(2) # gives the car time to move (5 seconds)
-	    error = error + 1
-	    #rospy.loginfo('Error value: %s\n'%error) # displays value of error variable
-	    if (error == 5):
-                return False
-        if (pos_meters != init_pos):
-            while (pos_meters > max_meter or pos_meters < min_meter):
-                rospy.sleep(1)
-            if (pos_meters <= max_meter and pos_meters >= min_meter): # if the position of the car is basically at the desired position, it's true.
-                rospy.loginfo('Position in meters: %s\n'%pos_meters) # displays position in meters
-		rospy.sleep(0.5) #gives time in between commands
-                return True
+        hex_position = hex(16**8 - 1 - int(round(pulses))).upper()[2:10]
+        msg = self.axis_str + 'a' + hex_position + 2*self.zero # creates message
 
-    # # #  MOVE_PULSES # # #  -> slight problem when asked to go to 480,000 pulses but loop takes care of it.
-    else:
-	error = 0
-        min_pulse = pos-1000.0 # min pulse value for basically same position
-        max_pulse = pos+1000.0 # max pulse value for basically same position
-        if (init_pulse <= max_pulse and init_pulse >= min_pulse): # if we're already there, it's true
-            rospy.loginfo('Position in pulses: %s\n'%pos_pulse) # displays position in pulses
-            return True
-        while (pos_pulse == init_pulse): # while false, keeping sending command until true
-            position = pos # var position is the passed in var pos from command line
-            #protocol subtracts position from FFFFFFFF if the robot homes to the motor end
-            position = hex(16**8 - 1 - int(round(position))).upper()[2:10]
-            msg = axis_str + 'a' + position + 2*zero # creates message
-            pos_int = 0 # clears string
-            for i in range(0, 8):               # adds up the ascii values of each character of the hex position
-                pos_int += int(position[i].encode("hex"), 16)
-            bcc_int = axis_val + ord('a') + pos_int + 2*ord(zero) # formula for bcc char
-            bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
-            csum = stx + msg + bcc + etx # creates the package to send into the controller
-            ser_lock.acquire()
-            ser.flushInput() #  clear buffer in case the serial responses get jumbled
-            ser.write(csum) # writes to the serial communication
-            ser_lock.release()
-            rospy.loginfo('Position command checksum sent: %s\n'%csum) # allows user to know what message package was sent
-            rospy.sleep(2) # gives the car time to move (5 seconds)
-	    error = error + 1
-	    #rospy.loginfo('Error value: %s\n'%error) # displays value of error variable	
-	    if (error == 5):
-                return False
-        if (pos_pulse != init_pulse):
-            while (pos_pulse > max_pulse or pos_pulse < min_pulse):
-                rospy.sleep(1)
-            if (pos_pulse <= max_pulse and pos_pulse >= min_pulse): # if the position of the car is basically at the desired position, it's true.
-                rospy.loginfo('Position in pulses: %s\n'%pos_pulse) # displays position in pulses
-	    	rospy.sleep(0.5) #gives time in between commands
-                return True
+        iters = 5
+        timeout = 2
+        rate = rospy.Rate(iters)
+        count = 0
 
+        # send message until rail starts to move
+        while start_position == self.get_position() and count < (timeout * iters):
+            self.serial_read_write(msg)
+            rate.sleep()
+            count += 1
 
+        # if rail didn't move after timeout, return false
+        if count == iters:
+            return False
 
+        # wait until rail reaches target
+        target = self.pulses_to_meters(pulses)
+        timeout = 60
+        return self.check_move_is_done(target, timeout)
 
-# Velocity and acceleration change signal
-def vel_acc(req):
-    vel = req.vel # gets velocity from command line
-    acc = req.acc # gets acceleration from command line
+    # these handlers vary depending on if the input is pulses or meters
+    def handle_move_pulses(self, req):
+        return self.move_pulses(req.pulses)
 
-    # # DEBUG
-    rospy.loginfo('Current velocity: %s\n'%vel)
+    def handle_move_meters(self, req):
+        return self.move_meters(req.meters)
 
-    # conversions defined in protocol instructions
-    vel = vel*100*300/lead
-    vel = hex(int(vel)).upper()[2:]
+    def get_position(self):
+        self.parameter_lock.acquire()
+        position = self.position_meters
+        self.parameter_lock.release()
+        return position
 
-    acc = acc/9.8*5883.99/lead
-    acc = hex(int(acc)).upper()[2:]
+    # current position publisher
+    def talker(self):
 
-    # protocol requires length of 4 characters
-    while len(acc) < 4:
-        acc = '0' + acc
-    while len(vel) < 4:
-        vel = '0' + vel
-
-    msg = axis_str + 'v' + '2' + vel + acc + zero # creates message
-    vel_acc_int = 0 # clears vel_acc_init string
-    for i in range (0, 4): # fills the vel_acc_init string
-        vel_acc_int += int(vel[i].encode("hex"), 16)
-        vel_acc_int += int(acc[i].encode("hex"), 16)
-    bcc_int = axis_val + ord('v') + ord('2') + vel_acc_int + ord(zero) # formula for bcc char
-    bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
-    csum = stx + msg + bcc + etx # creates the package to send into the controller
-    ser_lock.acquire()
-    ser.flushInput()		 #  clear buffer in case the serial responses get jumbled
-    ser.write(csum) # writes to the serial communication
-    ser_lock.release()
-    rospy.loginfo('Velocity and acceleration change checksum sent: %s\n'%csum) # allows user to know what message package was sent
-    return True
-
-# Position inquiry
-def pos_inq(pos_meters):
-    msg = axis_str + 'R4' + 4*zero + '74' + 3*zero # creates message
-    bcc_int = axis_val + ord('R') + 2*ord('4') + ord('7') + 7*ord(zero) # formula for bcc char
-    bcc = bcc_calc(bcc_int) # calculates bcc based off msg and bcc_init
-    csum = stx + msg + bcc + etx # creates package to send into the controller
-    ser_lock.acquire()
-    ser.flushInput()		 #  clear buffer in case the serial responses get jumbled
-    ser.write(csum) # writes to the serial communication
-    response = ser.read(16) # reads response from controller
-    ser_lock.release()
-    if len(response) == 0: response = '_' # if no response, the response is blank
-    if response[0] == stx: # if the response is actually a message package
-       try:
-          pos_pulses = int(response[5:13], 16) # reads the response and collects pulse information
-          pos_temp = float(((16**8-1)-pos_pulses)*10/8000.0/1000.0) # calculates the meters from the pulses
-	  if pos_temp < 10: # if the meters position data is under 10 (aka correct)
-	     pos_meters = pos_temp       #  a check to ensure position isn't read incorrectly. Occassionally happens at the beginning of a move
-       except ValueError:
-	  print 'ValueError' # if the pos_temp gives an incorrect or impossible value, print Value Error so the user knows
-	  #ser.flushInput()
-	  rospy.sleep(1)
-    #else:
-	#ser.flushInput()		 #  clear buffer in case the serial responses get jumbled
-    return pos_meters # returns the global var pos_meters
-
-# these handlers vary depending on if the input is pulses or meters
-def handle_move_pulses(req):
-    return MovePulsesResponse(abs_move(req.pulses, 0)) # calls to abs_pos
-
-def handle_move_meters(req):
-    pulses = int(req.meters*1000*8000/lead) # converts desired meters position to pulses for abs_pos function
-    return MoveMetersResponse(abs_move(pulses, 1)) # calls to abs_pos
-
-# current position publisher
-def talker():
-    global pos_meters
-    pos_meters = 1
-    pub = rospy.Publisher('/car/pos', Float32, queue_size=10)
-    rate = rospy.Rate(5)                #  5hz
-    while not rospy.is_shutdown():
-        pos_meters = pos_inq(pos_meters) # calls pos_ing for pos_meters while ros is running
-	pub.publish(pos_meters) #  publishes pos_meters
-        rate.sleep()
+        rate = rospy.Rate(10)                #  10hz
+        while not rospy.is_shutdown():
+            pos_meters = self.pos_inq()
+            if self.parameter_lock.acquire():
+                self.position_meters = pos_meters
+                self.position_pub.publish(pos_meters) #  publishes pos_meters
+                self.parameter_lock.release()
+            rate.sleep()
+        self.ser.close()
 
 #  all functions and services initializations
 def services_init():
     rospy.init_node('robo_cylinder_services')
-    ser_init()
-    char_init()
-    param_init()
-    status_s = rospy.Service('status_service', StatusUpdate, status)
-    power_io_s = rospy.Service('power_io', PowerIO, power)
-    home_s = rospy.Service('home_service', HomeCmd, home)
-    move_pulses_s = rospy.Service('move_pulses', MovePulses, handle_move_pulses)
-    move_meters_s = rospy.Service('move_meters', MoveMeters, handle_move_meters)
-    vel_acc_s = rospy.Service('vel_acc', VelAcc, vel_acc)    
-    try:
-        talker()
-    except rospy.ROSInterruptException:
-        pass
 
-    rospy.spin() #  wait for everything to be done 
+    my_driver = RoboCylinder()
+
+    rospy.spin() #  wait for everything to be done
 
 if __name__ == "__main__":
     services_init() #  calls the service_init function if the name is main
+
