@@ -20,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
    PowerIO.srv
    HomeCmd.srv
    StatusUpdate.srv
+   StringCmd.srv
    VelAcc.srv
  )
 
